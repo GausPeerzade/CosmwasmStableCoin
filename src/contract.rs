@@ -6,6 +6,8 @@ use cosmwasm_std::{
 use cosmwasm_std::{Addr, BankMsg, Uint128};
 use cw2::set_contract_version;
 
+use hongbai_oracle_sample::{msg::PriceResponse, msg::QueryMsg as OracleQuery};
+
 use cw0::parse_reply_instantiate_data;
 use cw20::Denom::Cw20;
 use cw20::{Cw20ExecuteMsg, Denom, Expiration, MinterResponse};
@@ -13,7 +15,9 @@ use cw20_base::contract::query_balance;
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::{COLLATERALDEPOSITED, LIQUIDATIONTH, OWNER, STABLE, TOKENSMINTED};
+use crate::state::{
+    Config, COLLATERALDEPOSITED, CONFIG, LIQUIDATIONTH, OWNER, STABLE, TOKENSMINTED,
+};
 
 const CONTRACT_NAME: &str = "crates.io:cw-stablecoin";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -29,7 +33,17 @@ pub fn instantiate(
     let owner = msg.owner.unwrap();
     let validate_owner = deps.api.addr_validate(&owner)?;
 
-    OWNER.save(deps.storage, &validate_owner)?;
+    let config = Config {
+        owner: validate_owner,
+        oracle: msg.oracle,
+        denom: msg.denom,
+        min_threashold: msg.min_threashold,
+        liquidity_threashold: msg.liquidity_threashold,
+        token_set: false,
+    };
+
+    CONFIG.save(deps.storage, &config)?;
+
     Ok(Response::new())
 }
 
@@ -41,7 +55,7 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::SetConfig { token, threashold } => execute_set_config(deps, token, threashold),
+        ExecuteMsg::SetToken { token } => execute_set_token(deps, info, token),
         ExecuteMsg::DepositCollateral {} => execute_deposit_collateral(deps, info),
         ExecuteMsg::DepositCollateralAndMint { token_amount } => {
             execute_deposit_collateral_mint(deps, info, token_amount)
@@ -56,25 +70,36 @@ pub fn execute(
         ExecuteMsg::Liquidate { user, amount_token } => {
             execute_liquidation(deps, env, info, user, amount_token)
         }
+        ExecuteMsg::Swap { amount_token } => execute_swap(deps, env, info, amount_token),
     }
 }
 
-fn execute_set_config(
+fn execute_set_token(
     deps: DepsMut,
+    info: MessageInfo,
     token: Addr,
-    threashold: Uint128,
 ) -> Result<Response, ContractError> {
+    let mut config = CONFIG.load(deps.storage)?;
+    let owner = config.owner.clone();
+    let sender = info.sender;
+    if owner != sender {
+        return Err(ContractError::NOTOWNER {});
+    } else if config.token_set {
+        return Err(ContractError::TOKENSET {});
+    }
+    config.token_set = true;
+    CONFIG.save(deps.storage, &config)?;
     STABLE.save(deps.storage, &token)?;
-    LIQUIDATIONTH.save(deps.storage, &threashold)?;
     Ok(Response::new())
 }
 
 fn execute_deposit_collateral(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
     let sent_funds = info.funds;
-
     let user = info.sender;
 
-    let amount_sent = amount_sent(sent_funds);
+    let config = CONFIG.load(deps.storage)?;
+
+    let amount_sent = amount_sent(sent_funds, config.denom.clone());
     println!("amount is {}", amount_sent);
     let user_deposit = COLLATERALDEPOSITED
         .load(deps.storage, user.clone())
@@ -83,7 +108,10 @@ fn execute_deposit_collateral(deps: DepsMut, info: MessageInfo) -> Result<Respon
     println!("user deposit is {}", user_deposit);
 
     COLLATERALDEPOSITED.save(deps.storage, user.clone(), &(amount_sent + user_deposit))?;
-    println!("Deposit total is in ex {}", amount_sent + user_deposit);
+    println!(
+        "Deposit total is in execute_deposit_collateral {}",
+        amount_sent + user_deposit
+    );
     Ok(Response::new().add_attribute("execute deposit", "collateral deposited"))
 }
 
@@ -96,7 +124,11 @@ fn execute_deposit_collateral_mint(
 
     let user = info.sender;
 
-    let amount_sent = amount_sent(sent_funds);
+    let config = CONFIG.load(deps.storage)?;
+
+    let token = STABLE.load(deps.storage)?;
+
+    let amount_sent = amount_sent(sent_funds, config.denom.clone());
     let user_deposit = COLLATERALDEPOSITED
         .load(deps.storage, user.clone())
         .unwrap_or_default();
@@ -106,23 +138,24 @@ fn execute_deposit_collateral_mint(
         .unwrap_or_default();
 
     token_minted += token_amount;
-    TOKENSMINTED.save(deps.storage, user.clone(), &token_minted)?;
 
+    TOKENSMINTED.save(deps.storage, user.clone(), &token_minted)?;
     COLLATERALDEPOSITED.save(deps.storage, user.clone(), &(amount_sent + user_deposit))?;
 
-    println!("Deposit total is in ex mint{}", amount_sent + user_deposit);
+    println!(
+        "Deposit total is in execute_deposit_collateral_mint {}",
+        amount_sent + user_deposit
+    );
 
     let collateral = COLLATERALDEPOSITED.load(deps.storage, user.clone())?;
-    let collateral_value = calculate_collateral_usd(collateral);
-    let liquidity_threashold = LIQUIDATIONTH.load(deps.storage).unwrap();
+    let collateral_value_usd = calculate_collateral_usd(collateral, deps.as_ref(), config.oracle);
+    let liquidity_threashold = config.liquidity_threashold;
     let health_Factor =
-        calculate_health_factor(collateral_value, token_minted, liquidity_threashold);
+        calculate_health_factor(collateral_value_usd, token_minted, liquidity_threashold);
     println!("Current health_Factor is {}", health_Factor);
     if health_Factor.is_zero() {
         return Err(ContractError::HealthFactorLess {});
     }
-
-    let token = STABLE.load(deps.storage)?;
 
     let msg = mint_stable(user.clone(), token_amount, token);
 
@@ -141,9 +174,12 @@ fn execute_redeem_collateral(
         .load(deps.storage, info.sender.clone())
         .unwrap_or_default();
 
-    let liquidity_threashold = LIQUIDATIONTH.load(deps.storage).unwrap();
+    let config = CONFIG.load(deps.storage)?;
 
-    let remaining_collateral = calculate_collateral_usd(deposit - amount_withdraw);
+    let liquidity_threashold = config.liquidity_threashold;
+
+    let remaining_collateral =
+        calculate_collateral_usd(deposit - amount_withdraw, deps.as_ref(), config.oracle);
     println!("remaining collateral  {}", remaining_collateral);
 
     let health_Factor =
@@ -163,15 +199,7 @@ fn execute_redeem_collateral(
         &(deposit - amount_withdraw),
     )?;
 
-    let msg = BankMsg::Send {
-        to_address: info.sender.to_string(),
-        amount: vec![Coin {
-            denom: "uom".to_string(),
-            amount: amount_withdraw,
-        }],
-    };
-
-    let cmsg: CosmosMsg = msg.into();
+    let msg = send_native(info.sender.clone(), amount_withdraw);
 
     let contract_balance = deps
         .querier
@@ -179,7 +207,7 @@ fn execute_redeem_collateral(
 
     println!("Contract balance is {}", contract_balance.amount);
 
-    Ok(Response::new().add_message(cmsg))
+    Ok(Response::new().add_message(msg))
 }
 
 fn execute_redeem_collateral_burn(
@@ -191,14 +219,16 @@ fn execute_redeem_collateral_burn(
 ) -> Result<Response, ContractError> {
     let token_minted = TOKENSMINTED.load(deps.storage, info.sender.clone())?;
     let collateral_deposited = COLLATERALDEPOSITED.load(deps.storage, info.sender.clone())?;
+    let config = CONFIG.load(deps.storage)?;
+    let token = STABLE.load(deps.storage)?;
 
     let new_token = token_minted - amount_token;
     let new_collateral = collateral_deposited - amount_collateral;
 
-    let liquidity_threashold = LIQUIDATIONTH.load(deps.storage).unwrap();
+    let liquidity_threashold = config.liquidity_threashold;
 
     let health_factor = calculate_health_factor(
-        calculate_collateral_usd(new_collateral),
+        calculate_collateral_usd(new_collateral, deps.as_ref(), config.oracle),
         new_token,
         liquidity_threashold,
     );
@@ -207,21 +237,11 @@ fn execute_redeem_collateral_burn(
         return Err(ContractError::HealthFactorLess {});
     }
 
-    let msg = BankMsg::Send {
-        to_address: info.sender.clone().to_string(),
-        amount: vec![Coin {
-            denom: "uom".to_string(),
-            amount: amount_collateral,
-        }],
-    };
-
-    let cmsg: CosmosMsg = msg.into();
-
-    let token = STABLE.load(deps.storage)?;
+    let msg = send_native(info.sender.clone(), amount_collateral);
 
     let burn_msg = burn_stable(info.sender, amount_token, token);
 
-    Ok(Response::new().add_message(cmsg).add_message(burn_msg))
+    Ok(Response::new().add_message(msg).add_message(burn_msg))
 }
 
 fn execute_liquidation(
@@ -233,11 +253,13 @@ fn execute_liquidation(
 ) -> Result<Response, ContractError> {
     let collateral_deposited = COLLATERALDEPOSITED.load(deps.storage, user.clone())?;
     let token_minted = TOKENSMINTED.load(deps.storage, user.clone())?;
+    let config = CONFIG.load(deps.storage)?;
+    let token = STABLE.load(deps.storage)?;
 
-    let liquidity_threashold = LIQUIDATIONTH.load(deps.storage)?;
+    let liquidity_threashold = config.liquidity_threashold;
 
     let health_factor = calculate_health_factor(
-        calculate_collateral_usd(collateral_deposited),
+        calculate_collateral_usd(collateral_deposited, deps.as_ref(), config.oracle.clone()),
         token_minted,
         liquidity_threashold,
     );
@@ -248,12 +270,40 @@ fn execute_liquidation(
 
     let new_amount = token_minted - amount;
 
-    let collatera_value = calculate_usd_in_collateral(amount);
+    let collatera_value = calculate_usd_in_collateral(amount, deps.as_ref(), config.oracle);
 
     let send_with_bonus =
         (collatera_value * Uint128::new(10)) / Uint128::new(100) + collatera_value;
 
-    unimplemented!()
+    let updated_collateral_value = collateral_deposited
+        .checked_sub(send_with_bonus)
+        .unwrap_or_default();
+
+    TOKENSMINTED.save(deps.storage, user.clone(), &new_amount)?;
+    COLLATERALDEPOSITED.save(deps.storage, user.clone(), &updated_collateral_value)?;
+
+    let burn_msg = burn_stable(info.sender.clone(), amount, token);
+
+    let send_msg = send_native(info.sender.clone(), send_with_bonus);
+    Ok(Response::new().add_message(burn_msg).add_message(send_msg))
+}
+
+fn execute_swap(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    amount_token: Uint128,
+) -> Result<Response, ContractError> {
+    let user = info.sender;
+    let token = STABLE.load(deps.storage)?;
+    let config = CONFIG.load(deps.storage)?;
+    let burn_msg = burn_stable(user.clone(), amount_token, token);
+
+    let collateral_amount = calculate_usd_in_collateral(amount_token, deps.as_ref(), config.oracle);
+
+    let send_msg = send_native(user.clone(), collateral_amount);
+
+    Ok(Response::new().add_message(burn_msg).add_message(send_msg))
 }
 
 fn calculate_health_factor(
@@ -269,23 +319,34 @@ fn calculate_health_factor(
     return health_factor;
 }
 
-fn amount_sent(sent_funds: Vec<Coin>) -> Uint128 {
+fn amount_sent(sent_funds: Vec<Coin>, denom: String) -> Uint128 {
     let amount = sent_funds
         .iter()
-        .find(|coin| coin.denom == "uom")
+        .find(|coin| coin.denom == denom)
         .map(|coin| coin.amount)
         .unwrap_or(Uint128::zero());
     return amount;
 }
 
-fn calculate_collateral_usd(amount: Uint128) -> Uint128 {
-    return (amount * Uint128::new(2000000)) / Uint128::new(1000000);
+fn calculate_collateral_usd(amount: Uint128, deps: Deps, oracle: Addr) -> Uint128 {
+    let price = oracle_price(oracle, deps);
+    return (amount * price) / Uint128::new(1000000);
 }
 
-fn calculate_usd_in_collateral(amount: Uint128) -> Uint128 {
-    return (amount * Uint128::new(1000000)) / Uint128::new(2000000);
+fn calculate_usd_in_collateral(amount: Uint128, deps: Deps, oracle: Addr) -> Uint128 {
+    let price = oracle_price(oracle, deps);
+    return (amount * Uint128::new(1000000)) / price;
 }
 
+fn oracle_price(oracle: Addr, deps: Deps) -> Uint128 {
+    let price_msg = OracleQuery::GetPrice {
+        symbol: "OM".to_string(),
+    };
+
+    // let price_response: PriceResponse = deps.querier.query_wasm_smart(oracle, &price_msg).unwrap();
+    // let price: u128 = price_response.price as u128;
+    return Uint128::new(2000000);
+}
 // fn deposit_collateral(user: Addr, amount: Uint128, deps: DepsMut) {}
 
 fn mint_stable(recipient: Addr, mint_amount: Uint128, token: Addr) -> CosmosMsg {
@@ -373,8 +434,11 @@ mod tests {
                 stable_id,
                 sender.clone(),
                 &InstantiateMsg {
-                    stable_coin_id: cw20_id,
                     owner: Some(sender.to_string()),
+                    oracle: Addr::unchecked("oracle"),
+                    denom: "uom".to_string(),
+                    min_threashold: Uint128::new(1),
+                    liquidity_threashold: Uint128::new(129),
                 },
                 &[],
                 "StableEngine",
@@ -441,9 +505,8 @@ mod tests {
         let contract_addrss =
             deploy_cw20_contract(cw20_id, stable_engine.clone(), &mut app, owner_addr.clone());
 
-        let execut_msg = ExecuteMsg::SetConfig {
+        let execut_msg = ExecuteMsg::SetToken {
             token: contract_addrss.clone(),
-            threashold: Uint128::new(129),
         };
 
         let response = app

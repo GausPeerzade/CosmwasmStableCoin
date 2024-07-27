@@ -3,12 +3,19 @@
   "title": "InstantiateMsg",
   "type": "object",
   "required": [
-    "count"
+    "stable_coin_id"
   ],
   "properties": {
-    "count": {
+    "owner": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stable_coin_id": {
       "type": "integer",
-      "format": "int32"
+      "format": "uint64",
+      "minimum": 0.0
     }
   }
 }

@@ -6,17 +6,23 @@ pub enum ContractError {
     #[error("{0}")]
     Std(#[from] StdError),
 
-    #[error("InstantiateFailed")]
+    #[error("InstantiateFailed ")]
     InstantiateFailed {},
 
-    #[error("TransferFailed(Not enough native sent)")]
+    #[error("TransferFailed(Not enough native sent )")]
     TransferFailed {},
 
-    #[error("health factor is below MIN")]
+    #[error("health factor is below MIN ")]
     HealthFactorLess {},
 
-    #[error("health factor is in safe range")]
+    #[error("health factor is in safe range ")]
     HealthFactorSafe {},
+
+    #[error("Only Owner is allowed ")]
+    NOTOWNER {},
+
+    #[error("Token in set already ")]
+    TOKENSET {},
 
     #[error("Custom Error val: {val:?}")]
     CustomError { val: String },

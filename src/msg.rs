@@ -1,5 +1,3 @@
-
-
 use cosmwasm_std::{Addr, Uint128};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -7,16 +5,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct InstantiateMsg {
-    pub stable_coin_id: u64,
     pub owner: Option<String>,
+    pub oracle: Addr,
+    pub denom: String,
+    pub min_threashold: Uint128,
+    pub liquidity_threashold: Uint128,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
-    SetConfig {
+    SetToken {
         token: Addr,
-        threashold: Uint128,
     },
     DepositCollateral {},
     DepositCollateralAndMint {
@@ -34,6 +34,9 @@ pub enum ExecuteMsg {
         user: Addr,
         amount_token: Uint128,
     },
+    Swap {
+        amount_token: Uint128,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -47,6 +50,14 @@ pub enum QueryMsg {
 pub struct CustomResponse {
     val: String,
 }
+
+// #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+// #[serde(rename_all = "snake_case")]
+// pub struct InfoResponse {
+//     collateral_deposited: Uint128,
+//     total_debt: Uint128,
+//     liquidity_threshold: Uint128,
+// }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
