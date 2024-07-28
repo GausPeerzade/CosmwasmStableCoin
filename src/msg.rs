@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct InstantiateMsg {
-    pub owner: Option<String>,
-    pub oracle: Addr,
+    pub owner: String,
+    pub oracle: String,
     pub denom: String,
     pub min_threashold: Uint128,
     pub liquidity_threashold: Uint128,
@@ -42,7 +42,8 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
-    CustomMsg { val: String },
+    Info { user: Addr },
+    Config {},
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -51,13 +52,23 @@ pub struct CustomResponse {
     val: String,
 }
 
-// #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-// #[serde(rename_all = "snake_case")]
-// pub struct InfoResponse {
-//     collateral_deposited: Uint128,
-//     total_debt: Uint128,
-//     liquidity_threshold: Uint128,
-// }
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct InfoResponse {
+    pub collateral_deposited: Uint128,
+    pub total_debt: Uint128,
+    pub health_factor: Uint128,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ConfigResponse {
+    pub owner: Addr,
+    pub total_collateral: Uint128,
+    pub oracle_price: Uint128,
+    pub fees: Uint128,
+    pub liquidity_threashold: Uint128,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]

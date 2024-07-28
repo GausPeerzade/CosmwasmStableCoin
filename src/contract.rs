@@ -6,6 +6,7 @@ use cosmwasm_std::{
 use cosmwasm_std::{Addr, BankMsg, Uint128};
 use cw2::set_contract_version;
 
+use cw20_base::msg;
 use hongbai_oracle_sample::{msg::PriceResponse, msg::QueryMsg as OracleQuery};
 
 use cw0::parse_reply_instantiate_data;
@@ -14,10 +15,8 @@ use cw20::{Cw20ExecuteMsg, Denom, Expiration, MinterResponse};
 use cw20_base::contract::query_balance;
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::{
-    Config, COLLATERALDEPOSITED, CONFIG, LIQUIDATIONTH, OWNER, STABLE, TOKENSMINTED,
-};
+use crate::msg::{ConfigResponse, ExecuteMsg, InfoResponse, InstantiateMsg, QueryMsg};
+use crate::state::{Config, COLLATERALDEPOSITED, CONFIG, STABLE, TOKENSMINTED};
 
 const CONTRACT_NAME: &str = "crates.io:cw-stablecoin";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,12 +29,13 @@ pub fn instantiate(
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    let owner = msg.owner.unwrap();
+    let owner = msg.owner;
     let validate_owner = deps.api.addr_validate(&owner)?;
+    let validate_oracle = deps.api.addr_validate(&msg.oracle)?;
 
     let config = Config {
         owner: validate_owner,
-        oracle: msg.oracle,
+        oracle: validate_oracle,
         denom: msg.denom,
         min_threashold: msg.min_threashold,
         liquidity_threashold: msg.liquidity_threashold,
@@ -343,9 +343,9 @@ fn oracle_price(oracle: Addr, deps: Deps) -> Uint128 {
         symbol: "OM".to_string(),
     };
 
-    // let price_response: PriceResponse = deps.querier.query_wasm_smart(oracle, &price_msg).unwrap();
-    // let price: u128 = price_response.price as u128;
-    return Uint128::new(2000000);
+    let price_response: PriceResponse = deps.querier.query_wasm_smart(oracle, &price_msg).unwrap();
+    let price: u128 = price_response.price as u128;
+    return Uint128::new(price);
 }
 // fn deposit_collateral(user: Addr, amount: Uint128, deps: DepsMut) {}
 
@@ -395,8 +395,42 @@ fn send_native(recipient: Addr, amount: Uint128) -> CosmosMsg {
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(_deps: Deps, _env: Env, _msg: QueryMsg) -> StdResult<Binary> {
-    unimplemented!()
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
+    match msg {
+        QueryMsg::Config {} => to_json_binary(&query_config(deps, env)?),
+        QueryMsg::Info { user } => to_json_binary(&query_info(deps, env, user)?),
+    }
+}
+
+pub fn query_config(deps: Deps, env: Env) -> StdResult<ConfigResponse> {
+    let config = CONFIG.load(deps.storage)?;
+    let collateral_in_contract = deps
+        .querier
+        .query_balance(env.contract.address.clone(), "uom")?;
+    Ok(ConfigResponse {
+        owner: config.owner,
+        total_collateral: collateral_in_contract.amount,
+        oracle_price: oracle_price(config.oracle, deps),
+        fees: Uint128::new(10),
+        liquidity_threashold: config.liquidity_threashold,
+    })
+}
+
+pub fn query_info(deps: Deps, env: Env, user: Addr) -> StdResult<InfoResponse> {
+    let collatera_deposited = COLLATERALDEPOSITED.load(deps.storage, user.clone())?;
+    let token_minted = TOKENSMINTED.load(deps.storage, user.clone())?;
+    let config = CONFIG.load(deps.storage)?;
+    let health_factor = calculate_health_factor(
+        calculate_collateral_usd(collatera_deposited, deps, config.oracle),
+        token_minted,
+        config.liquidity_threashold,
+    );
+
+    Ok(InfoResponse {
+        collateral_deposited: collatera_deposited,
+        total_debt: token_minted,
+        health_factor: health_factor,
+    })
 }
 
 #[cfg(test)]
@@ -434,8 +468,8 @@ mod tests {
                 stable_id,
                 sender.clone(),
                 &InstantiateMsg {
-                    owner: Some(sender.to_string()),
-                    oracle: Addr::unchecked("oracle"),
+                    owner: sender.to_string(),
+                    oracle: Addr::unchecked("oracle").to_string(),
                     denom: "uom".to_string(),
                     min_threashold: Uint128::new(1),
                     liquidity_threashold: Uint128::new(129),
@@ -612,6 +646,24 @@ mod tests {
         for coin in balances {
             println!("rn balance is {}: {}", coin.denom, coin.amount);
         }
+
+        let quer_msg = QueryMsg::Config {};
+        let config_response: ConfigResponse = app
+            .wrap()
+            .query_wasm_smart(stable_engine.clone(), &quer_msg)
+            .unwrap();
+
+        println!("query succesfull {:?}", config_response);
+
+        let quer_msg_info = QueryMsg::Info {
+            user: user_addr.clone(),
+        };
+        let info_response: InfoResponse = app
+            .wrap()
+            .query_wasm_smart(stable_engine.clone(), &quer_msg_info)
+            .unwrap();
+
+        println!("Info query succesfull {:?}", info_response);
     }
 
     #[test]
