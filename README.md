@@ -1,106 +1,109 @@
-# CosmWasm Starter Pack
+# CW-Stablecoin Smart Contract
 
-This is a template to build smart contracts in Rust to run inside a
-[Cosmos SDK](https://github.com/cosmos/cosmos-sdk) module on all chains that enable it.
-To understand the framework better, please read the overview in the
-[cosmwasm repo](https://github.com/CosmWasm/cosmwasm/blob/master/README.md),
-and dig into the [cosmwasm docs](https://www.cosmwasm.com).
-This assumes you understand the theory and just want to get coding.
+This repository contains a CosmWasm smart contract designed to create and manage a stablecoin system backed by collateral.
 
-## Creating a new repo from template
+## Overview
 
-Assuming you have a recent version of rust and cargo (v1.58.1+) installed
-(via [rustup](https://rustup.rs/)),
-then the following should get you a new repo to start a contract:
+The contract allows users to:
+- Deposit collateral
+- Mint stablecoins
+- Redeem collateral
+- Burn stablecoins
+- Liquidate positions
 
-Install [cargo-generate](https://github.com/ashleygwilliams/cargo-generate) and cargo-run-script.
-Unless you did that before, run this line now:
+## Maintaining the $1 Peg
+
+The protocol maintains the $1 peg of the stablecoin through the following mechanisms:
+
+1. **Collateral Backing**:
+   - Users deposit collateral (e.g., a native token) which is valued based on an external price oracle.
+   - The value of the collateral is used to ensure that each stablecoin minted is backed by sufficient collateral.
+
+2. **Health Factor**:
+   - The health factor is calculated as the ratio of the collateral value to the debt (stablecoins minted).
+   - A minimum health factor ensures that the value of the collateral always exceeds the value of the minted stablecoins.
+
+3. **Liquidation Mechanism**:
+   - If a user's health factor falls below a predefined threshold, their position can be liquidated.
+   - Liquidation involves burning the user's stablecoins and transferring the equivalent value of collateral to the liquidator, ensuring that the stablecoin remains fully backed.
+
+Reference: [calculate_health_factor function](src/contract.rs#L200)
+
+## Features
+
+### Initialization
+
+The contract is initialized with the following parameters:
+- Owner address
+- Oracle address
+- Denomination of the collateral
+- Minimum and liquidity thresholds
+
+Reference: [instantiate function](src/contract.rs#L23)
+
+### Execute Functions
+
+The contract supports several execute functions to manage the stablecoin system:
+
+- `SetToken`: Sets the stablecoin token address.
+- `DepositCollateral`: Allows users to deposit collateral.
+- `DepositCollateralAndMint`: Allows users to deposit collateral and mint stablecoins.
+- `RedeemCollateral`: Allows users to redeem their collateral.
+- `RedeemCollateralAndBurn`: Allows users to redeem collateral and burn stablecoins.
+- `Liquidate`: Allows liquidation of a user's position if their health factor is below the safe threshold.
+- `Swap`: Allows users to swap stablecoins for collateral at the current oracle price.
+
+Reference: [execute function](src/contract.rs#L53)
+
+### Helper Functions
+
+- `calculate_health_factor`: Calculates the health factor (collateral value relative to debt).
+- `amount_sent`: Calculates the amount of a specific denomination sent by the user.
+- `calculate_collateral_usd`: Converts the amount of collateral to its USD value using the oracle price.
+- `oracle_price`: Fetches the price of the collateral from the oracle.
+
+Reference: [helper functions](src/contract.rs#L200)
+
+### Minting and Burning Stablecoins
+
+- `mint_stable`: Mints new stablecoins and sends them to the user.
+- `burn_stable`: Burns a specified amount of stablecoins from the user's balance.
+
+Reference: [minting and burning functions](src/contract.rs#L265)
+
+### Query Functions
+
+- `Config`: Retrieves the current configuration of the contract.
+- `Info`: Retrieves information about a user's collateral, total debt, and health factor.
+
+Reference: [query function](src/contract.rs#L300)
+
+## State Management
+
+The contract tracks the following states:
+- Configuration (`CONFIG`)
+- Collateral deposited by users (`COLLATERALDEPOSITED`)
+- Tokens minted (`TOKENSMINTED`)
+- Stablecoin token address (`STABLE`)
+
+Reference: [state management](src/state.rs)
+
+## Error Handling
+
+Custom errors are defined to handle various failure scenarios such as unauthorized actions or insufficient health factors.
+
+Reference: [error definitions](src/error.rs)
+
+## Contract Version
+
+The contract version is set using the `set_contract_version` function from the `cw2` crate.
+
+Reference: [contract version](src/contract.rs#L17)
+
+## Building and Testing
+
+To build and test the contract, you can use the following commands:
 
 ```sh
-cargo install cargo-generate --features vendored-openssl
-cargo install cargo-run-script
-```
-
-Now, use it to create your new contract.
-Go to the folder in which you want to place it and run:
-
-
-**Latest: 1.0.0-beta6**
-
-```sh
-cargo generate --git https://github.com/CosmWasm/cw-template.git --name PROJECT_NAME
-````
-
-**Older Version**
-
-Pass version as branch flag:
-
-```sh
-cargo generate --git https://github.com/CosmWasm/cw-template.git --branch <version> --name PROJECT_NAME
-````
-
-Example:
-
-```sh
-cargo generate --git https://github.com/CosmWasm/cw-template.git --branch 0.16 --name PROJECT_NAME
-```
-
-You will now have a new folder called `PROJECT_NAME` (I hope you changed that to something else)
-containing a simple working contract and build system that you can customize.
-
-## Create a Repo
-
-After generating, you have a initialized local git repo, but no commits, and no remote.
-Go to a server (eg. github) and create a new upstream repo (called `YOUR-GIT-URL` below).
-Then run the following:
-
-```sh
-# this is needed to create a valid Cargo.lock file (see below)
-cargo check
-git branch -M main
-git add .
-git commit -m 'Initial Commit'
-git remote add origin YOUR-GIT-URL
-git push -u origin main
-```
-
-## CI Support
-
-We have template configurations for both [GitHub Actions](.github/workflows/Basic.yml)
-and [Circle CI](.circleci/config.yml) in the generated project, so you can
-get up and running with CI right away.
-
-One note is that the CI runs all `cargo` commands
-with `--locked` to ensure it uses the exact same versions as you have locally. This also means
-you must have an up-to-date `Cargo.lock` file, which is not auto-generated.
-The first time you set up the project (or after adding any dep), you should ensure the
-`Cargo.lock` file is updated, so the CI will test properly. This can be done simply by
-running `cargo check` or `cargo unit-test`.
-
-## Using your project
-
-Once you have your custom repo, you should check out [Developing](./Developing.md) to explain
-more on how to run tests and develop code. Or go through the
-[online tutorial](https://docs.cosmwasm.com/) to get a better feel
-of how to develop.
-
-[Publishing](./Publishing.md) contains useful information on how to publish your contract
-to the world, once you are ready to deploy it on a running blockchain. And
-[Importing](./Importing.md) contains information about pulling in other contracts or crates
-that have been published.
-
-Please replace this README file with information about your specific project. You can keep
-the `Developing.md` and `Publishing.md` files as useful referenced, but please set some
-proper description in the README.
-
-## Gitpod integration
-
-[Gitpod](https://www.gitpod.io/) container-based development platform will be enabled on your project by default.
-
-Workspace contains:
- - **rust**: for builds
- - [wasmd](https://github.com/CosmWasm/wasmd): for local node setup and client
- - **jq**: shell JSON manipulation tool
-
-Follow [Gitpod Getting Started](https://www.gitpod.io/docs/getting-started) and launch your workspace.
-
+cargo wasm
+cargo test
