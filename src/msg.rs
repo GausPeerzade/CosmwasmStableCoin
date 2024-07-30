@@ -22,12 +22,18 @@ pub enum ExecuteMsg {
     DepositCollateralAndMint {
         token_amount: Uint128,
     },
+    BorrowTokens {
+        token_amount: Uint128,
+    },
     RedeemCollateral {
         amount: Uint128,
     },
     RedeemCollateralAndBurn {
         amount_collateral: Uint128,
         amount_token: Uint128,
+    },
+    Repay {
+        token_amount: Uint128,
     },
 
     Liquidate {

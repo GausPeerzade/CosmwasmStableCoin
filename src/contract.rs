@@ -13,6 +13,7 @@ use cw0::parse_reply_instantiate_data;
 use cw20::Denom::Cw20;
 use cw20::{Cw20ExecuteMsg, Denom, Expiration, MinterResponse};
 use cw20_base::contract::query_balance;
+use serde::de;
 
 use crate::error::ContractError;
 use crate::msg::{ConfigResponse, ExecuteMsg, InfoResponse, InstantiateMsg, QueryMsg};
@@ -71,7 +72,61 @@ pub fn execute(
             execute_liquidation(deps, env, info, user, amount_token)
         }
         ExecuteMsg::Swap { amount_token } => execute_swap(deps, env, info, amount_token),
+        ExecuteMsg::BorrowTokens { token_amount } => {
+            execute_borrow_tokens(deps, env, info, token_amount)
+        }
+        ExecuteMsg::Repay { token_amount } => execute_repay(deps, env, info, token_amount),
     }
+}
+
+fn execute_borrow_tokens(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    amount: Uint128,
+) -> Result<Response, ContractError> {
+    let user = info.sender;
+    let config = CONFIG.load(deps.storage)?;
+    let tokens = TOKENSMINTED
+        .load(deps.storage, user.clone())
+        .unwrap_or_default();
+    let collateral = COLLATERALDEPOSITED.load(deps.storage, user.clone())?;
+    let new_amount = amount + tokens;
+
+    let liquidity_threashold = config.liquidity_threashold;
+
+    let health_factor = calculate_health_factor(
+        calculate_collateral_usd(collateral, deps.as_ref(), config.oracle),
+        new_amount,
+        liquidity_threashold,
+    );
+
+    if health_factor.is_zero() {
+        return Err(ContractError::HealthFactorLess {});
+    }
+    TOKENSMINTED.save(deps.storage, user.clone(), &new_amount)?;
+
+    let token_addr = STABLE.load(deps.storage)?;
+    let mint_msg = mint_stable(user.clone(), amount, token_addr);
+
+    Ok(Response::new().add_message(mint_msg))
+}
+
+fn execute_repay(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    amount: Uint128,
+) -> Result<Response, ContractError> {
+    let user = info.sender;
+    let tokens = TOKENSMINTED.load(deps.storage, user.clone())?;
+    let new_amount = tokens - amount;
+
+    let token_addr = STABLE.load(deps.storage)?;
+    let burn_msg = burn_stable(user.clone(), amount, token_addr);
+
+    TOKENSMINTED.save(deps.storage, user.clone(), &new_amount)?;
+    Ok(Response::new().add_message(burn_msg))
 }
 
 fn execute_set_token(
@@ -236,6 +291,9 @@ fn execute_redeem_collateral_burn(
     if health_factor.is_zero() {
         return Err(ContractError::HealthFactorLess {});
     }
+
+    TOKENSMINTED.save(deps.storage, info.sender.clone(), &new_token)?;
+    COLLATERALDEPOSITED.save(deps.storage, info.sender.clone(), &new_collateral)?;
 
     let msg = send_native(info.sender.clone(), amount_collateral);
 
